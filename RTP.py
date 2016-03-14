@@ -7,6 +7,7 @@ import struct
 ACK = int('00000001', 2)
 SYC = int('00000010', 2)
 FIN = int('00000100', 2)
+ERR = int('00001000', 2)
 
 headerStruct = struct.Struct('I I h')#sequence num, ACK num, control bits plus data
 
@@ -21,11 +22,8 @@ class RTPSocket(object):
             self.closeCallback = closeCallback
         self.connectionRequest = []
         self.currentConnection = {}
-        print self.socket
-        # return self
 
     def connect(self,address):
-        # self.address = address
         controlBits = SYC
         self.base = random.randint(0,10**8)
         header = headerStruct.pack(self.base, 0, controlBits)
@@ -33,36 +31,51 @@ class RTPSocket(object):
         self.socket.sendto(header+msg,address)
         print 'fist hand shake sent'
         connected = False
-        while (not connected):
-            inputready,outputready,exceptready = select([self.socket],[],[])
-            for each in inputready:
-                request2, self.address = self.socket.recvfrom(2048)
-                msglen = len(request2) - headerStruct.size
-                self.serverSeq, ack, ctl, msg = struct.Struct(headerStruct.format+" "+str(msglen)+'s').unpack(request2)
-                
-                if not ctl == (SYC|ACK) and not ack == self.base+1:
-                    return None
-
-                self.base = self.base+1
-                self.serverSeq = self.serverSeq + 1
-                header = headerStruct.pack(self.base, self.serverSeq, ACK)
-                msg = ''
-                self.socket.sendto(header+msg,self.address)
-                connected = True
-                break
-        
-        pass
-                        
+        self.socket.settimeout(3)
+        try:
+            #try to connect and it could timeout or fail
+            while (not connected):
+                inputready,outputready,exceptready = select([self.socket],[],[])
+                for each in inputready:
+                    request2, address2 = self.socket.recvfrom(2048)
+                    msglen = len(request2) - headerStruct.size
+                    self.serverSeq, ack, ctl, msg = struct.Struct(headerStruct.format+" "+str(msglen)+'s').unpack(request2)
+                    if not ctl == (SYC|ACK) :
+                        if ctl & ERR:
+                            print msg
+                        else:
+                            print 'unknown error'
+                        raise Exception('Connection error', 'Wrong response code')
+                    if not ack == self.base+1:
+                        raise Exception('Connection error', 'Wrong ACK')
+                    print 'good second hand shake'
+                    self.address = address2
+                    self.base = self.base+1
+                    self.serverSeq = self.serverSeq + 1
+                    header = headerStruct.pack(self.base, self.serverSeq, ACK)
+                    msg = ''
+                    self.socket.sendto(header+msg,self.address)
+                    connected = True
+                    self.socket.settimeout(None)
+                    break
+        except Exception, e:
+            print 'connectionRequest timeout!'
+            raise e
+    
     def accept(self):
         if len(self.currentConnection)<self.maxConnection:
             newConnection = self.createNewConnection()
             if newConnection:
                 self.currentConnection[newConnection.address]= newConnection
+            else:
+                print "Failed to establish connection"
             return newConnection
         else:
             #reject
             request, address = self.socket.recvfrom(2048)
-            self.socket.sendto('Connections are full',address)
+            header = headerStruct.pack(0, 0, ERR)
+            self.socket.sendto(header + 'Connection is full',address)
+            print "Connection is full"
             return None
         pass
 
@@ -83,13 +96,14 @@ class RTPSocket(object):
             newSocket.sendto(header+msg,address)
             while (1):
                 #should have timeout here to prevent infinite wait
-                try:
-                    request2, address2 = each.recvfrom(2048)
+                # try:
+                    request2, address2 = newSocket.recvfrom(2048)
                     if not address2 == address:
+                        #possible port scan
                         continue
                 except Exception, e:
-                    print e 
-                    #time out
+                    print "timeout: ", e 
+                    #time out  what should do??????
                     newSocket.close()
                     return None
 
